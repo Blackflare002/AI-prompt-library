@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Prompt Library</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <section class="hero">
+      <p class="eyebrow">Prompt Library</p>
+      <h1>Store, preview, and delete reusable prompts.</h1>
+      <p class="subtext">A lightweight local prompt vault for quick access during development.</p>
+    </section>
+
+    <section class="panel">
+      <form id="prompt-form" class="prompt-form" autocomplete="off">
+        <div class="field-group">
+          <label for="prompt-title">Prompt Title</label>
+          <input id="prompt-title" name="prompt-title" type="text" placeholder="e.g. Refactor helper function" required />
+        </div>
+
+        <div class="field-group">
+          <label for="prompt-content">Prompt Content</label>
+          <textarea id="prompt-content" name="prompt-content" rows="7" placeholder="Write your reusable prompt here..." required></textarea>
+        </div>
+
+        <button type="submit" class="save-button">Save Prompt</button>
+      </form>
+    </section>
+
+    <section class="library-section">
+      <div class="section-heading">
+        <h2>Saved Prompts</h2>
+        <span id="prompt-count" class="count-badge">0 prompts</span>
+      </div>
+      <div id="prompt-list" class="prompt-grid" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

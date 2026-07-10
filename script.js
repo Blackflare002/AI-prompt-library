@@ -5,13 +5,27 @@ const contentInput = document.getElementById("prompt-content");
 const promptList = document.getElementById("prompt-list");
 const promptCount = document.getElementById("prompt-count");
 
+// Normalizes stored prompt data before rendering.
 function normalizePrompt(prompt) {
   return {
     ...prompt,
     rating: Number.isInteger(prompt.rating) ? prompt.rating : 0,
+    notes: Array.isArray(prompt.notes)
+      ? prompt.notes.map((note) => ({
+          id: note.id,
+          text: typeof note.text === "string" ? note.text : "",
+          createdAt: Number.isFinite(note.createdAt)
+            ? note.createdAt
+            : Date.now(),
+          updatedAt: Number.isFinite(note.updatedAt)
+            ? note.updatedAt
+            : Date.now(),
+        }))
+      : [],
   };
 }
 
+// Loads prompts from localStorage and safely normalizes them.
 function loadPrompts() {
   const storedPrompts = localStorage.getItem(storageKey);
 
@@ -24,14 +38,32 @@ function loadPrompts() {
   }
 }
 
+// Saves prompts to localStorage and reports storage failures.
 function savePrompts(prompts) {
-  localStorage.setItem(storageKey, JSON.stringify(prompts));
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(prompts));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
+// Creates a blank note record for a new prompt note.
+function createEmptyNote() {
+  return {
+    id: crypto.randomUUID(),
+    text: "",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+// Returns a short preview string for the prompt card.
 function getPreview(content) {
   return content.trim().split(/\s+/).slice(0, 12).join(" ");
 }
 
+// Paints the current star rating state for one prompt.
 function paintRatingRow(ratingRow, activeRating) {
   const stars = ratingRow.querySelectorAll(".star-button");
   const ratingLabel = ratingRow.querySelector(".rating-label");
@@ -47,6 +79,7 @@ function paintRatingRow(ratingRow, activeRating) {
   }
 }
 
+// Renders the interactive star rating control for a prompt.
 function renderStarRating(prompt) {
   const ratingRow = document.createElement("div");
   ratingRow.className = "rating-row";
@@ -134,6 +167,7 @@ function renderStarRating(prompt) {
   return ratingRow;
 }
 
+// Updates a prompt rating and persists it.
 function updatePromptRating(promptId, rating) {
   const updatedPrompts = loadPrompts().map((prompt) => {
     if (prompt.id !== promptId) {
@@ -146,10 +180,226 @@ function updatePromptRating(promptId, rating) {
     };
   });
 
-  savePrompts(updatedPrompts);
+  if (!savePrompts(updatedPrompts)) {
+    window.alert("Unable to save changes right now.");
+    return;
+  }
+
   renderPrompts();
 }
 
+// Updates the notes array for a single prompt and persists it.
+function updatePromptNotes(promptId, updateCallback) {
+  const updatedPrompts = loadPrompts().map((prompt) => {
+    if (prompt.id !== promptId) {
+      return prompt;
+    }
+
+    return {
+      ...prompt,
+      notes: updateCallback(prompt.notes || []),
+    };
+  });
+
+  return savePrompts(updatedPrompts);
+}
+
+// Shows a brief saved status inside a note row.
+function showNoteStatus(noteElement, message) {
+  const status = noteElement.querySelector(".note-status");
+
+  if (!status) {
+    return;
+  }
+
+  status.textContent = message;
+  status.classList.add("is-visible");
+
+  window.setTimeout(() => {
+    if (status.textContent === message) {
+      status.textContent = "";
+      status.classList.remove("is-visible");
+    }
+  }, 1500);
+}
+
+// Renders one note row with paragraph and inline edit controls.
+function renderNote(promptId, note) {
+  const noteItem = document.createElement("article");
+  noteItem.className = "note-item";
+  noteItem.dataset.promptId = promptId;
+  noteItem.dataset.noteId = note.id;
+
+  if (!note.text) {
+    noteItem.classList.add("is-editing");
+  }
+
+  const noteText = document.createElement("p");
+  noteText.className = "note-text";
+  noteText.textContent = note.text || "";
+  noteText.hidden = !note.text;
+
+  const noteTextarea = document.createElement("textarea");
+  noteTextarea.className = "note-input";
+  noteTextarea.rows = 3;
+  noteTextarea.value = note.text;
+  noteTextarea.placeholder = "Add a note for this prompt...";
+  noteTextarea.setAttribute("aria-label", "Note text");
+  noteTextarea.hidden = Boolean(note.text);
+
+  const noteActions = document.createElement("div");
+  noteActions.className = "note-actions";
+
+  const editButton = document.createElement("button");
+  editButton.type = "button";
+  editButton.className = "note-edit-button";
+  editButton.textContent = "Edit";
+  editButton.hidden = !note.text;
+
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "note-save-button";
+  saveButton.textContent = "Save";
+  saveButton.hidden = Boolean(note.text);
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "note-delete-button";
+  deleteButton.textContent = "Delete";
+
+  const status = document.createElement("span");
+  status.className = "note-status";
+  status.setAttribute("aria-live", "polite");
+
+  noteActions.append(editButton, saveButton, deleteButton, status);
+  noteItem.append(noteText, noteTextarea, noteActions);
+
+  return noteItem;
+}
+
+// Renders the notes panel for a specific prompt card.
+function renderNotesSection(prompt) {
+  const notesSection = document.createElement("section");
+  notesSection.className = "notes-section";
+  notesSection.dataset.promptId = prompt.id;
+
+  const notesHeader = document.createElement("div");
+  notesHeader.className = "notes-header";
+
+  const notesTitle = document.createElement("h4");
+  notesTitle.textContent = "Notes";
+
+  const addNoteButton = document.createElement("button");
+  addNoteButton.type = "button";
+  addNoteButton.className = "add-note-button";
+  addNoteButton.dataset.action = "add-note";
+  addNoteButton.dataset.promptId = prompt.id;
+  addNoteButton.textContent = "Add Note";
+
+  notesHeader.append(notesTitle, addNoteButton);
+
+  const notesList = document.createElement("div");
+  notesList.className = "notes-list";
+
+  if (prompt.notes.length === 0) {
+    const emptyNotes = document.createElement("p");
+    emptyNotes.className = "notes-empty";
+    emptyNotes.textContent =
+      "No notes yet. Add one to capture context for this prompt.";
+    notesList.append(emptyNotes);
+  } else {
+    prompt.notes.forEach((note) => {
+      notesList.append(renderNote(prompt.id, note));
+    });
+  }
+
+  notesSection.append(notesHeader, notesList);
+
+  return notesSection;
+}
+
+// Adds a new blank note to a prompt and refreshes the cards.
+function addNote(promptId) {
+  const updated = updatePromptNotes(promptId, (notes) => [
+    createEmptyNote(),
+    ...notes,
+  ]);
+
+  if (!updated) {
+    window.alert("Unable to save notes right now.");
+    return;
+  }
+
+  renderPrompts();
+}
+
+// Saves note text, then collapses the editor back to a paragraph view.
+function saveNote(promptId, noteId, noteElement) {
+  const noteTextarea = noteElement.querySelector(".note-input");
+  const text = noteTextarea ? noteTextarea.value.trim() : "";
+
+  if (!text) {
+    window.alert("Note text cannot be empty.");
+    return;
+  }
+
+  const updated = updatePromptNotes(promptId, (notes) =>
+    notes.map((note) =>
+      note.id === noteId
+        ? {
+            ...note,
+            text,
+            updatedAt: Date.now(),
+          }
+        : note,
+    ),
+  );
+
+  if (!updated) {
+    window.alert("Unable to save notes right now.");
+    return;
+  }
+
+  const noteText = noteElement.querySelector(".note-text");
+  const editButton = noteElement.querySelector(".note-edit-button");
+  const saveButton = noteElement.querySelector(".note-save-button");
+
+  if (noteText) {
+    noteText.textContent = text;
+    noteText.hidden = false;
+  }
+
+  if (noteTextarea) {
+    noteTextarea.hidden = true;
+  }
+
+  if (editButton) {
+    editButton.hidden = false;
+  }
+
+  if (saveButton) {
+    saveButton.hidden = true;
+  }
+
+  noteElement.classList.remove("is-editing");
+  showNoteStatus(noteElement, "Saved");
+}
+
+// Deletes a note immediately and refreshes the card list.
+function deleteNote(promptId, noteId) {
+  const updated = updatePromptNotes(promptId, (notes) =>
+    notes.filter((note) => note.id !== noteId),
+  );
+
+  if (!updated) {
+    window.alert("Unable to update notes right now.");
+    return;
+  }
+
+  renderPrompts();
+}
+
+// Renders all saved prompts and their nested note sections.
 function renderPrompts() {
   const prompts = loadPrompts();
   promptList.innerHTML = "";
@@ -167,6 +417,7 @@ function renderPrompts() {
   prompts.forEach((prompt) => {
     const card = document.createElement("article");
     card.className = "prompt-card";
+    card.dataset.promptId = prompt.id;
 
     const title = document.createElement("h3");
     title.textContent = prompt.title;
@@ -187,16 +438,86 @@ function renderPrompts() {
       const updatedPrompts = loadPrompts().filter(
         (item) => item.id !== prompt.id,
       );
-      savePrompts(updatedPrompts);
+
+      if (!savePrompts(updatedPrompts)) {
+        window.alert("Unable to save changes right now.");
+        return;
+      }
+
       renderPrompts();
     });
 
     footer.appendChild(deleteButton);
-    card.append(title, preview, rating, footer);
+    const notesSection = renderNotesSection(prompt);
+
+    card.append(title, preview, rating, notesSection, footer);
     promptList.appendChild(card);
   });
 }
 
+// Handles note actions through event delegation on the prompt list.
+promptList.addEventListener("click", (event) => {
+  const actionButton = event.target.closest("button[data-action]");
+
+  if (actionButton && actionButton.dataset.action === "add-note") {
+    addNote(actionButton.dataset.promptId);
+    return;
+  }
+
+  const noteButton = event.target.closest(
+    ".note-edit-button, .note-save-button, .note-delete-button",
+  );
+  if (!noteButton) {
+    return;
+  }
+
+  const noteElement = noteButton.closest(".note-item");
+  if (!noteElement) {
+    return;
+  }
+
+  const { promptId, noteId } = noteElement.dataset;
+
+  if (noteButton.classList.contains("note-edit-button")) {
+    noteElement.classList.add("is-editing");
+
+    const noteText = noteElement.querySelector(".note-text");
+    const noteTextarea = noteElement.querySelector(".note-input");
+    const editButton = noteElement.querySelector(".note-edit-button");
+    const saveButton = noteElement.querySelector(".note-save-button");
+
+    if (noteText) {
+      noteText.hidden = true;
+    }
+
+    if (noteTextarea) {
+      noteTextarea.hidden = false;
+      noteTextarea.focus();
+      noteTextarea.setSelectionRange(
+        noteTextarea.value.length,
+        noteTextarea.value.length,
+      );
+    }
+
+    if (editButton) {
+      editButton.hidden = true;
+    }
+
+    if (saveButton) {
+      saveButton.hidden = false;
+    }
+
+    return;
+  }
+
+  if (noteButton.classList.contains("note-save-button")) {
+    saveNote(promptId, noteId, noteElement);
+  } else if (noteButton.classList.contains("note-delete-button")) {
+    deleteNote(promptId, noteId);
+  }
+});
+
+// Saves a newly created prompt from the main form.
 form.addEventListener("submit", (event) => {
   event.preventDefault();
 
@@ -213,9 +534,14 @@ form.addEventListener("submit", (event) => {
     title,
     content,
     rating: 0,
+    notes: [],
   });
 
-  savePrompts(prompts);
+  if (!savePrompts(prompts)) {
+    window.alert("Unable to save changes right now.");
+    return;
+  }
+
   form.reset();
   titleInput.focus();
   renderPrompts();

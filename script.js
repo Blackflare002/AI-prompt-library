@@ -1,15 +1,190 @@
 const storageKey = "ai-prompt-library-prompts";
 const form = document.getElementById("prompt-form");
 const titleInput = document.getElementById("prompt-title");
+const modelInput = document.getElementById("prompt-model");
 const contentInput = document.getElementById("prompt-content");
 const promptList = document.getElementById("prompt-list");
 const promptCount = document.getElementById("prompt-count");
+
+// Creates a valid ISO timestamp string for metadata records.
+function createIsoTimestamp() {
+  return new Date().toISOString();
+}
+
+// Checks whether a string is a strict ISO 8601 timestamp.
+function isIsoTimestamp(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const parsedDate = new Date(value);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return false;
+  }
+
+  return parsedDate.toISOString() === value;
+}
+
+// Detects whether prompt content looks like code for token estimation.
+function looksLikeCode(text) {
+  return /```|^\s*(?:function|class|const|let|var|import|export|def|return|if|for|while)\b/m.test(
+    text,
+  );
+}
+
+// Validates and estimates prompt tokens from content.
+function estimateTokens(text, isCode) {
+  if (typeof text !== "string") {
+    throw new Error("Prompt content must be a string.");
+  }
+
+  if (typeof isCode !== "boolean") {
+    throw new Error("isCode must be a boolean value.");
+  }
+
+  const normalizedText = text.trim();
+  const wordCount = normalizedText ? normalizedText.split(/\s+/).length : 0;
+  const characterCount = text.length;
+  const multiplier = isCode ? 1.3 : 1;
+  const min = Math.round(0.75 * wordCount * multiplier);
+  const max = Math.round(0.25 * characterCount * multiplier);
+  const estimatedTokens = Math.max(min, max);
+
+  let confidence = "high";
+
+  if (estimatedTokens > 5000) {
+    confidence = "low";
+  } else if (estimatedTokens >= 1000) {
+    confidence = "medium";
+  }
+
+  return { min, max, confidence };
+}
+
+// Builds a metadata object for a prompt and validates its inputs.
+function trackModel(modelName, content) {
+  if (typeof modelName !== "string") {
+    throw new Error("Model name must be a string.");
+  }
+
+  const normalizedModel = modelName.trim();
+
+  if (!normalizedModel) {
+    throw new Error("Model name cannot be empty.");
+  }
+
+  if (normalizedModel.length > 100) {
+    throw new Error("Model name must be 100 characters or fewer.");
+  }
+
+  if (typeof content !== "string") {
+    throw new Error("Prompt content must be a string.");
+  }
+
+  const createdAt = createIsoTimestamp();
+
+  return {
+    model: normalizedModel,
+    createdAt,
+    updatedAt: createdAt,
+    tokenEstimate: estimateTokens(content, looksLikeCode(content)),
+  };
+}
+
+// Updates the metadata timestamp while keeping it chronologically valid.
+function updateTimestamps(metadata) {
+  if (!metadata || typeof metadata !== "object") {
+    throw new Error("Metadata must be an object.");
+  }
+
+  if (typeof metadata.model !== "string" || !metadata.model.trim()) {
+    throw new Error("Metadata model must be a non-empty string.");
+  }
+
+  if (!isIsoTimestamp(metadata.createdAt)) {
+    throw new Error("Metadata createdAt must be a valid ISO 8601 timestamp.");
+  }
+
+  const updatedAt = createIsoTimestamp();
+
+  if (Date.parse(updatedAt) < Date.parse(metadata.createdAt)) {
+    throw new Error("updatedAt must be greater than or equal to createdAt.");
+  }
+
+  return {
+    ...metadata,
+    updatedAt,
+  };
+}
+
+// Normalizes token estimates so loaded prompts stay renderable.
+function normalizeTokenEstimate(tokenEstimate, content) {
+  if (
+    tokenEstimate &&
+    typeof tokenEstimate === "object" &&
+    Number.isFinite(tokenEstimate.min) &&
+    Number.isFinite(tokenEstimate.max) &&
+    ["high", "medium", "low"].includes(tokenEstimate.confidence)
+  ) {
+    return {
+      min: tokenEstimate.min,
+      max: tokenEstimate.max,
+      confidence: tokenEstimate.confidence,
+    };
+  }
+
+  return estimateTokens(content, looksLikeCode(content));
+}
+
+// Normalizes metadata for older saved prompts before rendering.
+function normalizeMetadata(prompt) {
+  const content = typeof prompt.content === "string" ? prompt.content : "";
+  const existingMetadata =
+    prompt.metadata && typeof prompt.metadata === "object"
+      ? prompt.metadata
+      : {};
+  const model =
+    typeof existingMetadata.model === "string" && existingMetadata.model.trim()
+      ? existingMetadata.model.trim().slice(0, 100)
+      : "Unknown model";
+  const createdAt = isIsoTimestamp(existingMetadata.createdAt)
+    ? existingMetadata.createdAt
+    : "1970-01-01T00:00:00.000Z";
+  const updatedAt = isIsoTimestamp(existingMetadata.updatedAt)
+    ? existingMetadata.updatedAt
+    : createdAt;
+
+  return {
+    model,
+    createdAt,
+    updatedAt:
+      Date.parse(updatedAt) < Date.parse(createdAt) ? createdAt : updatedAt,
+    tokenEstimate: normalizeTokenEstimate(
+      existingMetadata.tokenEstimate,
+      content,
+    ),
+  };
+}
+
+// Formats ISO timestamps for display in the prompt cards.
+function formatTimestamp(timestamp) {
+  if (!isIsoTimestamp(timestamp)) {
+    return "Unknown";
+  }
+
+  return new Date(timestamp).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
 
 // Normalizes stored prompt data before rendering.
 function normalizePrompt(prompt) {
   return {
     ...prompt,
     rating: Number.isInteger(prompt.rating) ? prompt.rating : 0,
+    metadata: normalizeMetadata(prompt),
     notes: Array.isArray(prompt.notes)
       ? prompt.notes.map((note) => ({
           id: note.id,
@@ -167,25 +342,100 @@ function renderStarRating(prompt) {
   return ratingRow;
 }
 
+// Renders the metadata block for a prompt card.
+function renderPromptMetadata(prompt) {
+  const metadata = prompt.metadata;
+  const metadataSection = document.createElement("div");
+  metadataSection.className = "prompt-metadata";
+
+  const modelRow = document.createElement("div");
+  modelRow.className = "metadata-row";
+
+  const modelLabel = document.createElement("span");
+  modelLabel.className = "metadata-label";
+  modelLabel.textContent = "Model";
+
+  const modelValue = document.createElement("span");
+  modelValue.className = "metadata-value";
+  modelValue.textContent = metadata.model;
+
+  modelRow.append(modelLabel, modelValue);
+
+  const createdRow = document.createElement("div");
+  createdRow.className = "metadata-row";
+
+  const createdLabel = document.createElement("span");
+  createdLabel.className = "metadata-label";
+  createdLabel.textContent = "Created";
+
+  const createdValue = document.createElement("time");
+  createdValue.className = "metadata-value";
+  createdValue.dateTime = metadata.createdAt;
+  createdValue.textContent = formatTimestamp(metadata.createdAt);
+
+  createdRow.append(createdLabel, createdValue);
+
+  const updatedRow = document.createElement("div");
+  updatedRow.className = "metadata-row";
+
+  const updatedLabel = document.createElement("span");
+  updatedLabel.className = "metadata-label";
+  updatedLabel.textContent = "Updated";
+
+  const updatedValue = document.createElement("time");
+  updatedValue.className = "metadata-value";
+  updatedValue.dateTime = metadata.updatedAt;
+  updatedValue.textContent = formatTimestamp(metadata.updatedAt);
+
+  updatedRow.append(updatedLabel, updatedValue);
+
+  const tokenRow = document.createElement("div");
+  tokenRow.className = `token-estimate confidence-${metadata.tokenEstimate.confidence}`;
+
+  const tokenLabel = document.createElement("span");
+  tokenLabel.textContent = `Tokens ${metadata.tokenEstimate.min} - ${metadata.tokenEstimate.max}`;
+
+  const confidenceBadge = document.createElement("span");
+  confidenceBadge.className = "confidence-badge";
+  confidenceBadge.textContent = metadata.tokenEstimate.confidence;
+
+  tokenRow.append(tokenLabel, confidenceBadge);
+  metadataSection.append(modelRow, createdRow, updatedRow, tokenRow);
+
+  return metadataSection;
+}
+
 // Updates a prompt rating and persists it.
 function updatePromptRating(promptId, rating) {
-  const updatedPrompts = loadPrompts().map((prompt) => {
-    if (prompt.id !== promptId) {
-      return prompt;
+  try {
+    const updatedPrompts = loadPrompts().map((prompt) => {
+      if (prompt.id !== promptId) {
+        return prompt;
+      }
+
+      const updatedPrompt = {
+        ...prompt,
+        rating,
+      };
+
+      return {
+        ...updatedPrompt,
+        metadata: updateTimestamps(updatedPrompt.metadata),
+      };
+    });
+
+    if (!savePrompts(updatedPrompts)) {
+      throw new Error("Unable to save changes right now.");
     }
 
-    return {
-      ...prompt,
-      rating,
-    };
-  });
-
-  if (!savePrompts(updatedPrompts)) {
-    window.alert("Unable to save changes right now.");
-    return;
+    renderPrompts();
+  } catch (error) {
+    window.alert(
+      error instanceof Error
+        ? error.message
+        : "Unable to save changes right now.",
+    );
   }
-
-  renderPrompts();
 }
 
 // Updates the notes array for a single prompt and persists it.
@@ -195,13 +445,22 @@ function updatePromptNotes(promptId, updateCallback) {
       return prompt;
     }
 
-    return {
+    const updatedPrompt = {
       ...prompt,
       notes: updateCallback(prompt.notes || []),
     };
+
+    return {
+      ...updatedPrompt,
+      metadata: updateTimestamps(updatedPrompt.metadata),
+    };
   });
 
-  return savePrompts(updatedPrompts);
+  if (!savePrompts(updatedPrompts)) {
+    return false;
+  }
+
+  return updatedPrompts.find((prompt) => prompt.id === promptId) || false;
 }
 
 // Shows a brief saved status inside a note row.
@@ -360,6 +619,17 @@ function saveNote(promptId, noteId, noteElement) {
     return;
   }
 
+  const promptCard = noteElement.closest(".prompt-card");
+  const metadataElement = promptCard
+    ? promptCard.querySelector(".prompt-metadata")
+    : null;
+
+  if (metadataElement) {
+    metadataElement.replaceWith(
+      renderPromptMetadata({ metadata: updated.metadata }),
+    );
+  }
+
   const noteText = noteElement.querySelector(".note-text");
   const editButton = noteElement.querySelector(".note-edit-button");
   const saveButton = noteElement.querySelector(".note-save-button");
@@ -401,7 +671,11 @@ function deleteNote(promptId, noteId) {
 
 // Renders all saved prompts and their nested note sections.
 function renderPrompts() {
-  const prompts = loadPrompts();
+  const prompts = loadPrompts().sort(
+    (left, right) =>
+      Date.parse(right.metadata.createdAt) -
+      Date.parse(left.metadata.createdAt),
+  );
   promptList.innerHTML = "";
   promptCount.textContent = `${prompts.length} prompt${prompts.length === 1 ? "" : "s"}`;
 
@@ -421,6 +695,8 @@ function renderPrompts() {
 
     const title = document.createElement("h3");
     title.textContent = prompt.title;
+
+    const metadata = renderPromptMetadata(prompt);
 
     const preview = document.createElement("p");
     preview.textContent = getPreview(prompt.content);
@@ -450,7 +726,7 @@ function renderPrompts() {
     footer.appendChild(deleteButton);
     const notesSection = renderNotesSection(prompt);
 
-    card.append(title, preview, rating, notesSection, footer);
+    card.append(title, metadata, preview, rating, notesSection, footer);
     promptList.appendChild(card);
   });
 }
@@ -522,29 +798,39 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
 
   const title = titleInput.value.trim();
+  const modelName = modelInput ? modelInput.value.trim() : "";
   const content = contentInput.value.trim();
 
   if (!title || !content) {
     return;
   }
 
-  const prompts = loadPrompts();
-  prompts.unshift({
-    id: crypto.randomUUID(),
-    title,
-    content,
-    rating: 0,
-    notes: [],
-  });
+  try {
+    const metadata = trackModel(modelName, content);
+    const prompts = loadPrompts();
+    prompts.unshift({
+      id: crypto.randomUUID(),
+      title,
+      content,
+      rating: 0,
+      notes: [],
+      metadata,
+    });
 
-  if (!savePrompts(prompts)) {
-    window.alert("Unable to save changes right now.");
-    return;
+    if (!savePrompts(prompts)) {
+      throw new Error("Unable to save changes right now.");
+    }
+
+    form.reset();
+    titleInput.focus();
+    renderPrompts();
+  } catch (error) {
+    window.alert(
+      error instanceof Error
+        ? error.message
+        : "Unable to save changes right now.",
+    );
   }
-
-  form.reset();
-  titleInput.focus();
-  renderPrompts();
 });
 
 renderPrompts();

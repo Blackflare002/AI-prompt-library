@@ -2,7 +2,7 @@
 
 ## Working style
 
-- Before writing code, explain your plan in plain language: what you're changing, why, and what else it touches.
+- Before writing code, explain your plan in plain language and simple terms: explain what you're changing, why, and what else it touches.
 - After writing code, briefly explain any non-obvious lines or decisions.
 
 ## Code style

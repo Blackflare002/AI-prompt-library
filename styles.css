@@ -200,6 +200,36 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.library-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.transfer-button {
+  border: 1px solid rgba(110, 231, 255, 0.28);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--text);
+  background: rgba(110, 231, 255, 0.1);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.transfer-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(110, 231, 255, 0.5);
+  box-shadow: 0 10px 22px rgba(61, 214, 255, 0.14);
+}
+
 .prompt-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -527,6 +557,11 @@ textarea {
   .section-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .library-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .save-button {

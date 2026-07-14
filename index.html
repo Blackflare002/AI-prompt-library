@@ -59,7 +59,21 @@
       <section class="library-section">
         <div class="section-heading">
           <h2>Saved Prompts</h2>
-          <span id="prompt-count" class="count-badge">0 prompts</span>
+          <div class="library-actions">
+            <span id="prompt-count" class="count-badge">0 prompts</span>
+            <button id="export-button" type="button" class="transfer-button">
+              Export
+            </button>
+            <button id="import-button" type="button" class="transfer-button">
+              Import
+            </button>
+            <input
+              id="import-file-input"
+              type="file"
+              accept="application/json,.json"
+              hidden
+            />
+          </div>
         </div>
         <div id="prompt-list" class="prompt-grid" aria-live="polite"></div>
       </section>

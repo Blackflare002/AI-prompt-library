@@ -5,6 +5,11 @@ const modelInput = document.getElementById("prompt-model");
 const contentInput = document.getElementById("prompt-content");
 const promptList = document.getElementById("prompt-list");
 const promptCount = document.getElementById("prompt-count");
+const exportButton = document.getElementById("export-button");
+const importButton = document.getElementById("import-button");
+const importFileInput = document.getElementById("import-file-input");
+const exportSchemaVersion = "1.0.0";
+const importBackupKey = "ai-prompt-library-import-backup";
 
 // Creates a valid ISO timestamp string for metadata records.
 function createIsoTimestamp() {
@@ -220,6 +225,470 @@ function savePrompts(prompts) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// Checks whether a token estimate object follows the expected shape.
+function isValidTokenEstimate(tokenEstimate) {
+  if (!tokenEstimate || typeof tokenEstimate !== "object") {
+    return false;
+  }
+
+  if (
+    !Number.isFinite(tokenEstimate.min) ||
+    !Number.isFinite(tokenEstimate.max)
+  ) {
+    return false;
+  }
+
+  return ["high", "medium", "low"].includes(tokenEstimate.confidence);
+}
+
+// Validates one prompt record and returns a safe normalized copy.
+function validatePromptRecord(prompt, index) {
+  if (!prompt || typeof prompt !== "object") {
+    throw new Error(`Prompt at index ${index} is not a valid object.`);
+  }
+
+  if (typeof prompt.id !== "string" || !prompt.id.trim()) {
+    throw new Error(`Prompt at index ${index} is missing a valid id.`);
+  }
+
+  if (typeof prompt.title !== "string" || !prompt.title.trim()) {
+    throw new Error(`Prompt ${prompt.id} is missing a valid title.`);
+  }
+
+  if (typeof prompt.content !== "string" || !prompt.content.trim()) {
+    throw new Error(`Prompt ${prompt.id} is missing valid content.`);
+  }
+
+  if (
+    !Number.isInteger(prompt.rating) ||
+    prompt.rating < 0 ||
+    prompt.rating > 5
+  ) {
+    throw new Error(`Prompt ${prompt.id} has an invalid rating.`);
+  }
+
+  if (!Array.isArray(prompt.notes)) {
+    throw new Error(`Prompt ${prompt.id} has invalid notes.`);
+  }
+
+  const normalizedNotes = prompt.notes.map((note, noteIndex) => {
+    if (!note || typeof note !== "object") {
+      throw new Error(
+        `Prompt ${prompt.id} has an invalid note at index ${noteIndex}.`,
+      );
+    }
+
+    if (typeof note.id !== "string" || !note.id.trim()) {
+      throw new Error(`Prompt ${prompt.id} has a note with invalid id.`);
+    }
+
+    if (typeof note.text !== "string") {
+      throw new Error(`Prompt ${prompt.id} has a note with invalid text.`);
+    }
+
+    if (!Number.isFinite(note.createdAt) || !Number.isFinite(note.updatedAt)) {
+      throw new Error(
+        `Prompt ${prompt.id} has a note with invalid timestamps.`,
+      );
+    }
+
+    if (note.updatedAt < note.createdAt) {
+      throw new Error(
+        `Prompt ${prompt.id} has a note with inconsistent timestamps.`,
+      );
+    }
+
+    return {
+      id: note.id,
+      text: note.text,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+    };
+  });
+
+  const metadata = prompt.metadata;
+
+  if (!metadata || typeof metadata !== "object") {
+    throw new Error(`Prompt ${prompt.id} is missing metadata.`);
+  }
+
+  if (typeof metadata.model !== "string" || !metadata.model.trim()) {
+    throw new Error(`Prompt ${prompt.id} has invalid metadata.model.`);
+  }
+
+  if (
+    !isIsoTimestamp(metadata.createdAt) ||
+    !isIsoTimestamp(metadata.updatedAt)
+  ) {
+    throw new Error(`Prompt ${prompt.id} has invalid metadata timestamps.`);
+  }
+
+  if (Date.parse(metadata.updatedAt) < Date.parse(metadata.createdAt)) {
+    throw new Error(
+      `Prompt ${prompt.id} has metadata.updatedAt before metadata.createdAt.`,
+    );
+  }
+
+  if (!isValidTokenEstimate(metadata.tokenEstimate)) {
+    throw new Error(`Prompt ${prompt.id} has invalid metadata token estimate.`);
+  }
+
+  return {
+    id: prompt.id,
+    title: prompt.title.trim(),
+    content: prompt.content,
+    rating: prompt.rating,
+    notes: normalizedNotes,
+    metadata: {
+      model: metadata.model.trim().slice(0, 100),
+      createdAt: metadata.createdAt,
+      updatedAt: metadata.updatedAt,
+      tokenEstimate: {
+        min: metadata.tokenEstimate.min,
+        max: metadata.tokenEstimate.max,
+        confidence: metadata.tokenEstimate.confidence,
+      },
+    },
+  };
+}
+
+// Validates a prompt array and enforces unique ids.
+function validatePromptCollection(prompts) {
+  if (!Array.isArray(prompts)) {
+    throw new Error("Prompts data must be an array.");
+  }
+
+  const seenIds = new Set();
+
+  return prompts.map((prompt, index) => {
+    const validPrompt = validatePromptRecord(prompt, index);
+
+    if (seenIds.has(validPrompt.id)) {
+      throw new Error(`Duplicate prompt id found: ${validPrompt.id}.`);
+    }
+
+    seenIds.add(validPrompt.id);
+    return validPrompt;
+  });
+}
+
+// Builds export statistics used by the transfer schema.
+function buildExportStatistics(prompts) {
+  const totalPrompts = prompts.length;
+  const totalRating = prompts.reduce((sum, prompt) => sum + prompt.rating, 0);
+  const averageRating = totalPrompts
+    ? Number((totalRating / totalPrompts).toFixed(2))
+    : 0;
+
+  const usageByModel = new Map();
+
+  prompts.forEach((prompt) => {
+    const model = prompt.metadata.model;
+    usageByModel.set(model, (usageByModel.get(model) || 0) + 1);
+  });
+
+  let mostUsedModel = "N/A";
+  let highestCount = 0;
+
+  usageByModel.forEach((count, model) => {
+    if (count > highestCount) {
+      highestCount = count;
+      mostUsedModel = model;
+    }
+  });
+
+  return {
+    totalPrompts,
+    averageRating,
+    mostUsedModel,
+  };
+}
+
+// Converts ISO timestamps into a filename-safe stamp.
+function createFileStamp() {
+  return createIsoTimestamp().replace(/[:.]/g, "-");
+}
+
+// Validates export metadata fields for imported files.
+function validateExportStatistics(statistics) {
+  if (!statistics || typeof statistics !== "object") {
+    throw new Error("Import file has invalid statistics metadata.");
+  }
+
+  if (
+    !Number.isFinite(statistics.totalPrompts) ||
+    statistics.totalPrompts < 0
+  ) {
+    throw new Error("Import file has invalid statistics.totalPrompts.");
+  }
+
+  if (!Number.isFinite(statistics.averageRating)) {
+    throw new Error("Import file has invalid statistics.averageRating.");
+  }
+
+  if (typeof statistics.mostUsedModel !== "string") {
+    throw new Error("Import file has invalid statistics.mostUsedModel.");
+  }
+}
+
+// Checks schema version compatibility for imports.
+function isSupportedImportVersion(version) {
+  if (typeof version !== "string") {
+    return false;
+  }
+
+  const [major] = version.split(".");
+  return Number.parseInt(major, 10) === 1;
+}
+
+// Parses and validates an import file payload against the schema.
+function parseImportPayload(fileContent) {
+  let payload;
+
+  try {
+    payload = JSON.parse(fileContent);
+  } catch {
+    throw new Error("Import file is not valid JSON.");
+  }
+
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Import file must contain an object at the root.");
+  }
+
+  if (!isSupportedImportVersion(payload.version)) {
+    throw new Error(
+      `Unsupported import version: ${String(payload.version)}. Expected major version 1.`,
+    );
+  }
+
+  if (!isIsoTimestamp(payload.exportedAt)) {
+    throw new Error("Import file has invalid exportedAt timestamp.");
+  }
+
+  validateExportStatistics(payload.statistics);
+  const prompts = validatePromptCollection(payload.prompts);
+
+  if (payload.statistics.totalPrompts !== prompts.length) {
+    throw new Error(
+      "Import file statistics do not match prompt count. The file may be corrupted.",
+    );
+  }
+
+  return {
+    version: payload.version,
+    exportedAt: payload.exportedAt,
+    statistics: payload.statistics,
+    prompts,
+  };
+}
+
+// Creates a restorable backup snapshot before an import operation.
+function storeImportBackup(rawExistingData) {
+  try {
+    localStorage.setItem(
+      importBackupKey,
+      JSON.stringify({
+        createdAt: createIsoTimestamp(),
+        storageKey,
+        data: rawExistingData,
+      }),
+    );
+  } catch {
+    // Ignore backup write failures and rely on in-memory rollback.
+  }
+}
+
+// Restores localStorage to the pre-import snapshot after failure.
+function rollbackImport(rawExistingData) {
+  if (rawExistingData === null) {
+    localStorage.removeItem(storageKey);
+    return;
+  }
+
+  localStorage.setItem(storageKey, rawExistingData);
+}
+
+// Merges imported prompts with existing prompts based on conflict strategy.
+function mergePromptsWithStrategy(existingPrompts, importedPrompts, strategy) {
+  const existingMap = new Map(
+    existingPrompts.map((prompt) => [prompt.id, prompt]),
+  );
+  const importedById = new Map(
+    importedPrompts.map((prompt) => [prompt.id, prompt]),
+  );
+  const conflictingIds = importedPrompts
+    .filter((prompt) => existingMap.has(prompt.id))
+    .map((prompt) => prompt.id);
+
+  if (conflictingIds.length === 0) {
+    return [...existingPrompts, ...importedPrompts];
+  }
+
+  if (strategy === "keep-existing") {
+    const nonConflictingImports = importedPrompts.filter(
+      (prompt) => !existingMap.has(prompt.id),
+    );
+    return [...existingPrompts, ...nonConflictingImports];
+  }
+
+  if (strategy === "replace-existing") {
+    const replaced = existingPrompts.map(
+      (prompt) => importedById.get(prompt.id) || prompt,
+    );
+    const nonConflictingImports = importedPrompts.filter(
+      (prompt) => !existingMap.has(prompt.id),
+    );
+    return [...replaced, ...nonConflictingImports];
+  }
+
+  if (strategy === "duplicate-imported") {
+    const usedIds = new Set(existingPrompts.map((prompt) => prompt.id));
+    const dedupedImports = importedPrompts.map((prompt) => {
+      if (!usedIds.has(prompt.id)) {
+        usedIds.add(prompt.id);
+        return prompt;
+      }
+
+      let nextId = crypto.randomUUID();
+      while (usedIds.has(nextId)) {
+        nextId = crypto.randomUUID();
+      }
+
+      usedIds.add(nextId);
+      return {
+        ...prompt,
+        id: nextId,
+      };
+    });
+
+    return [...existingPrompts, ...dedupedImports];
+  }
+
+  throw new Error("Unknown merge strategy selected.");
+}
+
+// Asks the user how to resolve prompt id conflicts during merge mode.
+function promptConflictStrategy(conflictCount) {
+  const rawChoice = window.prompt(
+    `${conflictCount} duplicate ID conflict(s) found. Choose one: keep-existing, replace-existing, duplicate-imported, or cancel.`,
+    "keep-existing",
+  );
+
+  const choice =
+    typeof rawChoice === "string" ? rawChoice.trim().toLowerCase() : "cancel";
+
+  if (
+    choice === "keep-existing" ||
+    choice === "replace-existing" ||
+    choice === "duplicate-imported"
+  ) {
+    return choice;
+  }
+
+  return "cancel";
+}
+
+// Builds a fully validated export payload for download.
+function buildExportPayload() {
+  const prompts = validatePromptCollection(loadPrompts());
+
+  return {
+    version: exportSchemaVersion,
+    exportedAt: createIsoTimestamp(),
+    statistics: buildExportStatistics(prompts),
+    prompts,
+  };
+}
+
+// Exports the prompt library as a timestamped JSON file.
+function exportPrompts() {
+  try {
+    const payload = buildExportPayload();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = downloadUrl;
+    link.download = `ai-prompt-library-export-${createFileStamp()}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(downloadUrl);
+  } catch (error) {
+    window.alert(
+      error instanceof Error
+        ? `Export failed: ${error.message}`
+        : "Export failed due to an unexpected error.",
+    );
+  }
+}
+
+// Imports prompts from schema-validated JSON with rollback on failure.
+function importPromptsFromPayload(payload) {
+  const existingRawData = localStorage.getItem(storageKey);
+  const existingPrompts = validatePromptCollection(loadPrompts());
+
+  storeImportBackup(existingRawData);
+
+  try {
+    const replaceAll =
+      existingPrompts.length > 0
+        ? window.confirm(
+            "Import mode: click OK to replace all existing prompts, or Cancel to merge with existing prompts.",
+          )
+        : true;
+
+    let nextPrompts = payload.prompts;
+
+    if (!replaceAll) {
+      const existingIds = new Set(existingPrompts.map((prompt) => prompt.id));
+      const conflictCount = payload.prompts.filter((prompt) =>
+        existingIds.has(prompt.id),
+      ).length;
+
+      if (conflictCount > 0) {
+        const strategy = promptConflictStrategy(conflictCount);
+
+        if (strategy === "cancel") {
+          throw new Error(
+            "Import canceled by user during conflict resolution.",
+          );
+        }
+
+        nextPrompts = mergePromptsWithStrategy(
+          existingPrompts,
+          payload.prompts,
+          strategy,
+        );
+      } else {
+        nextPrompts = [...existingPrompts, ...payload.prompts];
+      }
+    }
+
+    const validatedFinalPrompts = validatePromptCollection(nextPrompts);
+
+    if (!savePrompts(validatedFinalPrompts)) {
+      throw new Error("Unable to write imported prompts to localStorage.");
+    }
+
+    renderPrompts();
+    window.alert(
+      `Import successful: ${payload.prompts.length} prompt(s) processed.`,
+    );
+  } catch (error) {
+    rollbackImport(existingRawData);
+    renderPrompts();
+
+    throw new Error(
+      error instanceof Error
+        ? error.message
+        : "Import failed due to an unexpected error.",
+    );
   }
 }
 
@@ -832,5 +1301,47 @@ form.addEventListener("submit", (event) => {
     );
   }
 });
+
+// Opens the file picker to start an import flow.
+if (importButton && importFileInput) {
+  importButton.addEventListener("click", () => {
+    importFileInput.click();
+  });
+
+  importFileInput.addEventListener("change", async (event) => {
+    const fileInput = event.target;
+
+    if (
+      !(fileInput instanceof HTMLInputElement) ||
+      !fileInput.files ||
+      fileInput.files.length === 0
+    ) {
+      return;
+    }
+
+    const [file] = fileInput.files;
+
+    try {
+      const content = await file.text();
+      const payload = parseImportPayload(content);
+      importPromptsFromPayload(payload);
+    } catch (error) {
+      window.alert(
+        error instanceof Error
+          ? `Import failed: ${error.message}`
+          : "Import failed due to an unexpected error.",
+      );
+    } finally {
+      fileInput.value = "";
+    }
+  });
+}
+
+// Starts export flow and downloads the transfer file.
+if (exportButton) {
+  exportButton.addEventListener("click", () => {
+    exportPrompts();
+  });
+}
 
 renderPrompts();
